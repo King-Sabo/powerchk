@@ -16,6 +16,13 @@ the meter/cloud requests, Winsock for the one-time OAuth2 login redirect, GDI+
 for the per-pixel-alpha layered window. Static CRT (`/MT`), so the built EXE
 depends only on system DLLs — no redistributable.
 
+## Screenshots
+
+| Feeding in (export) | Consuming (import) |
+|:---:|:---:|
+| ![powerchk feeding in — 552 W in green with an up arrow](feed.png) | ![powerchk consuming — 1066 W in red with a down arrow](consump.png) |
+| Green digits + ▲ = exporting to the grid | Red digits + ▼ = drawing from the grid |
+
 ## Data sources
 
 powerchk polls the EcoTracker's **local REST API** (`http://<ip>/v1/json`) once
