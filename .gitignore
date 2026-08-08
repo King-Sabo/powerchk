@@ -1,0 +1,28 @@
+# Visual Studio / MSVC build output
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+ipch/
+*.aps
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.tlog
+*.log
+*.idb
+*.iobj
+*.ipdb
+*.pch
+*.res
+
+# VS user/session state
+.vs/
+*.user
+*.suo
+*.opendb
+*.VC.db
+*.VC.opendb

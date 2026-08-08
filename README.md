@@ -1,0 +1,100 @@
+# powerchk
+
+A small always-on-top Windows widget that shows live grid power from an
+**everHome EcoTracker** as glowing seven-segment LED digits.
+
+- **Consumption / import** → red
+- **Feed-in / export** → green
+- Tiny in/out kWh counters along the bottom (toggle with `SHOW_COUNTERS`)
+- A small **cyan dot** (top-right) means the reading is coming from the cloud
+  fallback rather than the local device.
+- **Sound alert** on a green→red edge (export→import). Right-click to toggle;
+  the setting is remembered. Off with `sound_alert=0`; custom WAV via `alert_sound`.
+
+Single self-contained translation unit. No third-party libraries: WinHTTP for
+the meter/cloud requests, Winsock for the one-time OAuth2 login redirect, GDI+
+for the per-pixel-alpha layered window. Static CRT (`/MT`), so the built EXE
+depends only on system DLLs — no redistributable.
+
+## Data sources
+
+powerchk polls the EcoTracker's **local REST API** (`http://<ip>/v1/json`) once
+a second. If the local address is unreachable, it falls back to the everHome
+**cloud API** (OAuth2), polling more slowly. The cloud path is only used while
+the local device is down, and only if credentials are configured.
+
+## Build in Visual Studio 2022
+
+1. Open `powerchk.sln`.
+2. Pick **Release / x64** (or Debug).
+3. Build (Ctrl+Shift+B). Output: `x64\Release\powerchk.exe`.
+
+Requires the **Desktop development with C++** workload (toolset v143, Windows
+10/11 SDK).
+
+## Build from the command line
+
+From an *x64 Native Tools Command Prompt for VS 2022*:
+
+```
+cl /nologo /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE powerchk\powerchk.cpp ^
+   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib winhttp.lib ^
+   shell32.lib ws2_32.lib winmm.lib
+```
+
+## Run
+
+```
+powerchk.exe                          rem local: http://192.168.1.111/v1/json, 1 s
+powerchk.exe 192.168.1.111            rem local host or IP
+powerchk.exe http://host/v1/json 2000 rem full local URL + poll interval (ms)
+powerchk.exe --login [port]           rem one-time cloud enrollment
+```
+
+Drag the window with the left mouse button; right-click for **Exit**.
+
+## Cloud fallback setup (optional)
+
+The cloud is only needed when the local API is unreachable. everHome uses the
+OAuth2 **authorization-code** grant, so a refresh token has to be minted once
+through a browser login — after that, powerchk runs headless from the file.
+
+1. Copy `powerchk.credentials.example` → `powerchk.credentials` (next to the EXE).
+2. Create an OAuth2 app at
+   <https://everhome.cloud/en/developer/applications> and set its **redirect URL**
+   to `http://localhost:53127/callback`. Paste the Client ID / Secret into the file.
+3. Run `powerchk.exe --login`. Approve access in the browser. powerchk stores
+   the `refresh_token` and writes `everhome_devices.json` next to the EXE.
+4. Find your EcoTracker in `everhome_devices.json` and put its id in `device_id`.
+
+From then on, `powerchk.exe` (no args) uses local first and cloud as a fallback.
+
+### Notes & caveats
+
+- **Rate limit:** everHome does not publish a cloud rate limit, so the fallback
+  polls conservatively — default `cloud_interval_ms=60000` (60 s), configurable
+  in the credential file (minimum 5 s). Local polling is unaffected.
+- **Cloud response shape:** the cloud reader extracts `power` /
+  `energyCounterIn` / `energyCounterOut` — the same field names as the local
+  API. If your tenant returns these under a different endpoint, point
+  `cloud_device_path` at the right resource (discoverable from
+  `everhome_devices.json` / `GET /device`).
+- **Secrets:** `powerchk.credentials` holds long-lived secrets in plaintext.
+  Restrict its ACL (see the comment in the file). For stronger protection,
+  wrapping the secret/refresh values with DPAPI (`CryptProtectData`) is the
+  natural next step.
+- **Token rotation:** if everHome rotates the refresh token on refresh,
+  powerchk writes the new one back into `powerchk.credentials` automatically.
+
+## Configuration (compile-time)
+
+Constants near the top of `powerchk.cpp`:
+
+- `NEGATIVE_IS_FEEDIN` — sign convention of the meter's `power` field.
+- `SHOW_COUNTERS` — show/hide the bottom kWh line.
+- `DIGIT_COUNT` — number of seven-segment cells (default 5 → up to 99999 W).
+
+## Roadmap
+
+- Second pane for SMA inverter production (the layout in `MakeLayout` and the
+  `Reading` struct extend to more than one source).
