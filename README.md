@@ -1,5 +1,7 @@
 # powerchk
 
+<img src="icon.png" width="96" align="right" alt="powerchk icon">
+
 A small always-on-top Windows widget that shows live grid power from an
 **everHome EcoTracker** as glowing seven-segment LED digits.
 
@@ -30,6 +32,29 @@ a second. If the local address is unreachable, it falls back to the everHome
 **cloud API** (OAuth2), polling more slowly. The cloud path is only used while
 the local device is down, and only if credentials are configured.
 
+### Enabling the EcoTracker local API
+
+The local JSON endpoint (`http://<ip>/v1/json`) is served only when the
+device's **Local HTTP server** is switched on. It is **off by default**, so a
+fresh EcoTracker will not answer until you enable it.
+
+1. Open the **everHome app** and select your **EcoTracker** device.
+2. Open its settings and turn on **Local HTTP server**
+   (German UI: *Lokaler HTTP-Server*).
+3. From the PC that will run powerchk, open `http://<ecotracker-ip>/v1/json`
+   in a browser. You should get a small JSON object containing `power`,
+   `energyCounterIn`, and `energyCounterOut`.
+
+Once enabled the endpoint responds on port 80 with **no authentication** and is
+readable by anything on the same LAN. `power` is negative when feeding in and
+positive when consuming — which is why powerchk ships with
+`NEGATIVE_IS_FEEDIN = true`. (You can confirm the current state on the device
+object in `everhome_devices.json`: `"jsonHttpServer": true`.)
+
+If the browser check fails: verify the PC and the meter are on the same
+network/VLAN and that the IP is right. Until the local endpoint responds,
+powerchk shows dashes unless the cloud fallback is configured.
+
 ## Build in Visual Studio 2022
 
 1. Open `powerchk.sln`.
@@ -44,7 +69,8 @@ Requires the **Desktop development with C++** workload (toolset v143, Windows
 From an *x64 Native Tools Command Prompt for VS 2022*:
 
 ```
-cl /nologo /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE powerchk\powerchk.cpp ^
+rc /nologo /fo powerchk\powerchk.res powerchk\powerchk.rc
+cl /nologo /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE powerchk\powerchk.cpp powerchk\powerchk.res ^
    /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib winhttp.lib ^
    shell32.lib ws2_32.lib winmm.lib
 ```
@@ -58,7 +84,11 @@ powerchk.exe http://host/v1/json 2000 rem full local URL + poll interval (ms)
 powerchk.exe --login [port]           rem one-time cloud enrollment
 ```
 
-Drag the window with the left mouse button; right-click for **Exit**.
+Drag the window from anywhere with the left mouse button. **Resize** by dragging
+any edge or corner — the LED aspect ratio is preserved and the digits scale as
+crisp vector shapes (no bitmap blur). The zoom is remembered across restarts
+(`scale=` in the credential file). Right-click for a menu: toggle the sound
+alert, **Reset size**, or **Exit**.
 
 ## Cloud fallback setup (optional)
 
@@ -81,11 +111,12 @@ From then on, `powerchk.exe` (no args) uses local first and cloud as a fallback.
 - **Rate limit:** everHome does not publish a cloud rate limit, so the fallback
   polls conservatively — default `cloud_interval_ms=60000` (60 s), configurable
   in the credential file (minimum 5 s). Local polling is unaffected.
-- **Cloud response shape:** the cloud reader extracts `power` /
-  `energyCounterIn` / `energyCounterOut` — the same field names as the local
-  API. If your tenant returns these under a different endpoint, point
-  `cloud_device_path` at the right resource (discoverable from
-  `everhome_devices.json` / `GET /device`).
+- **Cloud response shape:** the cloud reader pulls the meter's live `power` /
+  `energyCounterIn` / `energyCounterOut` from the device's `states` (it skips
+  the `statedefinitions` metadata that reuses the same names). `device_id` is
+  the numeric `id` of your EcoTracker in `everhome_devices.json`. If a
+  single-device GET isn't served, powerchk automatically falls back to
+  `GET /device`; you can also set `cloud_device_path` explicitly.
 - **Secrets:** `powerchk.credentials` holds long-lived secrets in plaintext.
   Restrict its ACL (see the comment in the file). For stronger protection,
   wrapping the secret/refresh values with DPAPI (`CryptProtectData`) is the

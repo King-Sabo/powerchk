@@ -47,6 +47,7 @@
 #include <objidl.h>   // IStream, PROPID, byte — required by <gdiplus.h> under WIN32_LEAN_AND_MEAN
 #include <gdiplus.h>
 #include <playsoundapi.h>   // PlaySoundW
+#include "resource.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -137,7 +138,9 @@ static HWND               g_hwnd = nullptr;
 static std::mutex         g_mtx;
 static Reading            g_reading;
 static std::atomic<bool>  g_running{ true };
-static float              g_scale = 1.0f;
+static float              g_scale = 1.0f;      // effective = dpi * user
+static float              g_dpiScale = 1.0f;
+static float              g_userScale = 1.0f;  // persisted zoom (scale= in creds)
 
 static std::wstring       g_localHost = L"192.168.1.111";
 static std::wstring       g_localPath = L"/v1/json";
@@ -249,23 +252,31 @@ static bool WriteFileBytes(const std::wstring& path, const std::string& data) {
 
 static std::optional<double> JsonNumber(const std::string& s, const char* key) {
     std::string needle = "\""; needle += key; needle += "\"";
-    size_t k = s.find(needle);
-    if (k == std::string::npos) return std::nullopt;
-    size_t c = s.find(':', k + needle.size());
-    if (c == std::string::npos) return std::nullopt;
-    size_t i = c + 1;
-    while (i < s.size() && isspace((unsigned char)s[i])) ++i;
-    size_t start = i;
-    if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
-    bool any = false;
-    while (i < s.size()) {
-        char ch = s[i];
-        if ((ch >= '0' && ch <= '9') || ch == '.' || ch == 'e' || ch == 'E' || ch == '+' || ch == '-') { ++i; any = true; }
-        else break;
+    size_t pos = 0;
+    while (true) {
+        size_t k = s.find(needle, pos);
+        if (k == std::string::npos) return std::nullopt;
+        pos = k + needle.size();
+        // treat the match as a KEY only if the next non-space char is ':'
+        size_t j = pos;
+        while (j < s.size() && isspace((unsigned char)s[j])) ++j;
+        if (j >= s.size() || s[j] != ':') continue;   // it was a value/substring, not a key
+        size_t i = j + 1;
+        while (i < s.size() && isspace((unsigned char)s[i])) ++i;
+        size_t start = i;
+        if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
+        bool any = false;
+        while (i < s.size()) {
+            char ch = s[i];
+            if ((ch >= '0' && ch <= '9') || ch == '.' || ch == 'e' || ch == 'E' || ch == '+' || ch == '-') { ++i; any = true; }
+            else break;
+        }
+        if (any) {
+            try { return std::stod(s.substr(start, i - start)); }
+            catch (...) { /* keep searching */ }
+        }
+        // value wasn't numeric (e.g. the "power" object under statedefinitions) -> keep searching
     }
-    if (!any) return std::nullopt;
-    try { return std::stod(s.substr(start, i - start)); }
-    catch (...) { return std::nullopt; }
 }
 static std::optional<std::string> JsonString(const std::string& s, const char* key) {
     std::string needle = "\""; needle += key; needle += "\"";
@@ -458,21 +469,18 @@ static bool EnsureToken() {
 
 // ---- cloud device read -----------------------------------------------------
 
-static bool CloudFetch(Reading& r) {
-    if (g_cloudDevicePath.empty()) return false;
-    if (!EnsureToken()) return false;
-
+static bool CloudTry(const std::wstring& path, Reading& r) {
     std::wstring auth = L"Authorization: Bearer " + g_accessToken;
-    HttpResult res = HttpRequest(L"GET", g_cloudHost, g_cloudPort, true, g_cloudDevicePath, auth, "", true);
+    HttpResult res = HttpRequest(L"GET", g_cloudHost, g_cloudPort, true, path, auth, "", true);
     if (res.status == 401) {                 // token rejected: force one refresh and retry
         g_accessToken.clear(); g_accessExpiry = 0;
         if (!EnsureToken()) return false;
         auth = L"Authorization: Bearer " + g_accessToken;
-        res = HttpRequest(L"GET", g_cloudHost, g_cloudPort, true, g_cloudDevicePath, auth, "", true);
+        res = HttpRequest(L"GET", g_cloudHost, g_cloudPort, true, path, auth, "", true);
     }
     if (!res.ok || res.status != 200) return false;
 
-    auto p = JsonNumber(res.body, "power");  // same field names as the local API
+    auto p = JsonNumber(res.body, "power");  // reads the live "states" value; skips metadata
     if (!p) return false;
     r.power = *p;
     r.valid = true;
@@ -482,6 +490,15 @@ static bool CloudFetch(Reading& r) {
     r.inKwh  = (ci ? *ci : 0.0) / 1000.0;
     r.outKwh = (co ? *co : 0.0) / 1000.0;
     return true;
+}
+static bool CloudFetch(Reading& r) {
+    if (g_cloudDevicePath.empty()) return false;
+    if (!EnsureToken()) return false;
+    if (CloudTry(g_cloudDevicePath, r)) return true;
+    // Some tenants don't serve a single-device GET; fall back to the full list,
+    // from which the meter's live values are picked up by key.
+    if (g_cloudDevicePath != L"/device" && CloudTry(L"/device", r)) return true;
+    return false;
 }
 
 static void InitCloudFromCreds() {
@@ -503,6 +520,8 @@ static void InitCloudFromCreds() {
     std::string sa = CredGet("sound_alert");
     if (!sa.empty()) { std::string v = Lower(sa); g_soundAlert = (v == "1" || v == "true" || v == "yes" || v == "on"); }
     std::string as = CredGet("alert_sound"); if (!as.empty()) g_alertSound = Widen(as);
+    std::string sc = CredGet("scale");
+    if (!sc.empty()) { double v = atof(sc.c_str()); if (v >= 0.6 && v <= 4.0) g_userScale = (float)v; }
 
     g_cloudEnabled = !g_clientId.empty() && !g_clientSecret.empty() &&
                      !g_refresh.empty()  && !g_cloudDevicePath.empty();
@@ -945,8 +964,23 @@ static void ParseLocalEndpoint(const std::wstring& s) {
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_NCHITTEST:
+    case WM_NCHITTEST: {
+        RECT wr; GetWindowRect(hwnd, &wr);
+        int gx = (int)(short)LOWORD(lp), gy = (int)(short)HIWORD(lp);
+        int x = gx - wr.left, y = gy - wr.top;
+        int w = wr.right - wr.left, h = wr.bottom - wr.top;
+        int grip = (int)(8 * g_dpiScale); if (grip < 6) grip = 6;
+        bool L_ = x < grip, R_ = x >= w - grip, T_ = y < grip, B_ = y >= h - grip;
+        if (T_ && L_) return HTTOPLEFT;
+        if (T_ && R_) return HTTOPRIGHT;
+        if (B_ && L_) return HTBOTTOMLEFT;
+        if (B_ && R_) return HTBOTTOMRIGHT;
+        if (L_) return HTLEFT;
+        if (R_) return HTRIGHT;
+        if (T_) return HTTOP;
+        if (B_) return HTBOTTOM;
         return HTCAPTION;
+    }
 
     case WM_APP_DATA:
         RenderNow();
@@ -957,6 +991,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HMENU m = CreatePopupMenu();
         AppendMenuW(m, MF_STRING | (g_soundAlert.load() ? MF_CHECKED : MF_UNCHECKED), 2,
                     L"Sound alert on green\u2192red");
+        AppendMenuW(m, MF_STRING, 3, L"Reset size");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING, 1, L"Exit");
         SetForegroundWindow(hwnd);
@@ -964,15 +999,68 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         DestroyMenu(m);
         if (cmd == 1) DestroyWindow(hwnd);
         else if (cmd == 2) { bool nv = !g_soundAlert.load(); g_soundAlert = nv; SetCredLine("sound_alert", nv ? "1" : "0"); }
+        else if (cmd == 3) {
+            g_userScale = 1.0f; g_scale = g_dpiScale;
+            Layout L = MakeLayout(g_scale);
+            RECT wr; GetWindowRect(hwnd, &wr);
+            SetWindowPos(hwnd, nullptr, wr.right - L.w, wr.top, L.w, L.h, SWP_NOZORDER | SWP_NOACTIVATE);
+            RenderNow();
+            SetCredLine("scale", "1.000");
+        }
         return 0;
     }
 
     case WM_DPICHANGED: {
-        g_scale = (float)HIWORD(wp) / 96.0f;
+        g_dpiScale = (float)HIWORD(wp) / 96.0f;
+        g_scale = g_dpiScale * g_userScale;
         RECT* prc = (RECT*)lp;
         Layout L = MakeLayout(g_scale);
         SetWindowPos(hwnd, nullptr, prc->left, prc->top, L.w, L.h, SWP_NOZORDER | SWP_NOACTIVATE);
         RenderNow();
+        return 0;
+    }
+
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mmi = (MINMAXINFO*)lp;
+        Layout lo = MakeLayout(g_dpiScale * 0.6f), hi = MakeLayout(g_dpiScale * 4.0f);
+        mmi->ptMinTrackSize.x = lo.w; mmi->ptMinTrackSize.y = lo.h;
+        mmi->ptMaxTrackSize.x = hi.w; mmi->ptMaxTrackSize.y = hi.h;
+        return 0;
+    }
+
+    case WM_SIZING: {
+        RECT* r = (RECT*)lp;
+        Layout base = MakeLayout(1.0f);
+        int pw = r->right - r->left, ph = r->bottom - r->top;
+        float total = (wp == WMSZ_TOP || wp == WMSZ_BOTTOM)
+                        ? (float)ph / base.h : (float)pw / base.w;
+        float user = total / g_dpiScale;
+        if (user < 0.6f) user = 0.6f;
+        if (user > 4.0f) user = 4.0f;
+        total = g_dpiScale * user;
+        Layout L = MakeLayout(total);
+        switch (wp) {
+            case WMSZ_LEFT:        r->left = r->right - L.w; r->bottom = r->top + L.h; break;
+            case WMSZ_RIGHT:       r->right = r->left + L.w; r->bottom = r->top + L.h; break;
+            case WMSZ_TOP:         r->top = r->bottom - L.h; r->right = r->left + L.w; break;
+            case WMSZ_BOTTOM:      r->bottom = r->top + L.h; r->right = r->left + L.w; break;
+            case WMSZ_TOPLEFT:     r->left = r->right - L.w; r->top = r->bottom - L.h; break;
+            case WMSZ_TOPRIGHT:    r->right = r->left + L.w; r->top = r->bottom - L.h; break;
+            case WMSZ_BOTTOMLEFT:  r->left = r->right - L.w; r->bottom = r->top + L.h; break;
+            case WMSZ_BOTTOMRIGHT: r->right = r->left + L.w; r->bottom = r->top + L.h; break;
+        }
+        g_userScale = user; g_scale = total;
+        return TRUE;
+    }
+
+    case WM_SIZE:
+        RenderNow();
+        return 0;
+
+    case WM_EXITSIZEMOVE: {
+        char b[32];
+        snprintf(b, sizeof(b), "%.3f", (double)g_userScale);
+        SetCredLine("scale", b);
         return 0;
     }
 
@@ -1017,20 +1105,27 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     GdiplusStartupInput gsi;
     GdiplusStartup(&gpToken, &gsi, nullptr);
 
-    WNDCLASSW wc{};
+    HICON hIcon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_POWERCHK), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    HICON hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_POWERCHK), IMAGE_ICON,
+                                      GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
     wc.lpszClassName = L"PowerChkWidget";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    RegisterClassW(&wc);
+    wc.hIcon = hIcon;
+    wc.hIconSm = hIconSm;
+    RegisterClassExW(&wc);
 
     g_hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        wc.lpszClassName, L"Power", WS_POPUP,
+        wc.lpszClassName, L"Power", WS_POPUP | WS_THICKFRAME,
         0, 0, 10, 10, nullptr, nullptr, hInst, nullptr);
 
     UINT dpi = GetDpiForWindow(g_hwnd);
-    g_scale = dpi / 96.0f;
+    g_dpiScale = dpi / 96.0f;
+    g_scale = g_dpiScale * g_userScale;
     Layout L = MakeLayout(g_scale);
 
     RECT wa{};
