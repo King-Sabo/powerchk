@@ -11,7 +11,8 @@ A small always-on-top Windows widget that shows live grid power from an
 - A small **cyan dot** (top-right) means the reading is coming from the cloud
   fallback rather than the local device.
 - **Sound alert** on a green→red edge (export→import). Right-click to toggle;
-  the setting is remembered. Off with `sound_alert=0`; custom WAV via `alert_sound`.
+  the setting is remembered. Off with `sound_alert=0`; custom PCM `.wav` via `alert_sound` (single backslashes,
+  no escaping; a missing file falls back to the system sound).
 
 Single self-contained translation unit. No third-party libraries: WinHTTP for
 the meter/cloud requests, Winsock for the one-time OAuth2 login redirect, GDI+

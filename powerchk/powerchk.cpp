@@ -384,8 +384,15 @@ static void LoadCreds() {
         std::string t = Trim(line);
         if (!t.empty() && t[0] != '#') {
             size_t eq = t.find('=');
-            if (eq != std::string::npos)
-                g_cred.kv[Lower(Trim(t.substr(0, eq)))] = Trim(t.substr(eq + 1));
+            if (eq != std::string::npos) {
+                std::string key = Lower(Trim(t.substr(0, eq)));
+                std::string val = Trim(t.substr(eq + 1));
+                // strip a whitespace-preceded inline comment: "value  # note" -> "value"
+                // (a '#' not preceded by space is kept, so paths like C:\C#\a.wav survive)
+                for (size_t i = 1; i < val.size(); ++i)
+                    if (val[i] == '#' && isspace((unsigned char)val[i - 1])) { val = Trim(val.substr(0, i)); break; }
+                g_cred.kv[key] = val;
+            }
         }
         if (nl == std::string::npos) break;
         i = nl + 1;
@@ -761,10 +768,10 @@ static int DirectionOf(const Reading& r) {
 }
 static void PlayAlert() {
     if (!g_soundAlert.load()) return;
-    if (!g_alertSound.empty())
-        PlaySoundW(g_alertSound.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
-    else
-        PlaySoundW(L"SystemExclamation", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+    if (!g_alertSound.empty() &&
+        PlaySoundW(g_alertSound.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT))
+        return;   // custom WAV played; otherwise fall back so the alert is never silent
+    PlaySoundW(L"SystemExclamation", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
 }
 
 // ---- polling thread --------------------------------------------------------
