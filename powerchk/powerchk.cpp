@@ -49,6 +49,7 @@
 #include <playsoundapi.h>   // PlaySoundW
 #include "resource.h"
 #include <string>
+#include <string_view>
 #include <vector>
 #include <map>
 #include <utility>
@@ -77,13 +78,13 @@ using namespace Gdiplus;
 // Sign convention of the meter's "power" field. Most grid meters report a
 // signed value: positive = drawing from the grid, negative = feeding in. If
 // yours is reversed, set this to false.
-static const bool NEGATIVE_IS_FEEDIN = true;
+static constexpr bool NEGATIVE_IS_FEEDIN = true;
 
-static const bool SHOW_COUNTERS = true;   // tiny in/out kWh line at the bottom
-static const int  DIGIT_COUNT   = 5;      // fits up to 99999 W
+static constexpr bool SHOW_COUNTERS = true;   // tiny in/out kWh line at the bottom
+static constexpr int  DIGIT_COUNT   = 5;      // fits up to 99999 W
 
-static const wchar_t* CRED_FILE = L"powerchk.credentials";
-static const int      DEFAULT_REDIRECT_PORT = 53127;
+static constexpr const wchar_t* CRED_FILE = L"powerchk.credentials";
+static constexpr int      DEFAULT_REDIRECT_PORT = 53127;
 
 // ---------------------------------------------------------------------------
 
@@ -91,7 +92,7 @@ static const int      DEFAULT_REDIRECT_PORT = 53127;
 
 enum { SEG_A = 1, SEG_B = 2, SEG_C = 4, SEG_D = 8, SEG_E = 16, SEG_F = 32, SEG_G = 64 };
 
-static const int kSeg7[10] = {
+static constexpr int kSeg7[10] = {
     SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F,       // 0
     SEG_B|SEG_C,                               // 1
     SEG_A|SEG_B|SEG_G|SEG_E|SEG_D,             // 2
@@ -141,13 +142,12 @@ static std::atomic<bool>  g_running{ true };
 static float              g_scale = 1.0f;      // effective = dpi * user
 static float              g_dpiScale = 1.0f;
 static float              g_userScale = 1.0f;  // persisted zoom (scale= in creds)
+static float              g_stashedScale = 0.0f;  // size remembered by the reset toggle (0 = none)
 
-static std::wstring       g_localHost = L"192.168.1.111";
-static std::wstring       g_localPath = L"/v1/json";
+static std::wstring       g_localHost = L"192.168.1.111";   // host/IP is overridable
 static int                g_localIntervalMs = 1000;
 
 static std::wstring       g_cloudHost = L"everhome.cloud";
-static INTERNET_PORT      g_cloudPort = 443;
 static int                g_cloudIntervalMs = 60000;   // conservative; no documented limit
 static std::wstring       g_cloudDevicePath;           // e.g. /device/123
 static bool               g_cloudEnabled = false;
@@ -158,6 +158,10 @@ static ULONGLONG          g_accessExpiry = 0;                     // GetTickCoun
 
 static std::atomic<bool>  g_soundAlert{ true };   // beep on a green->red (export->import) edge
 static std::wstring       g_alertSound;           // optional custom WAV; empty = system sound
+
+// fixed endpoints (compile-time constants)
+static constexpr std::wstring_view g_localPath = L"/v1/json";   // ecotracker local path
+static constexpr INTERNET_PORT     g_cloudPort = 443;           // everHome cloud (HTTPS)
 
 // ---- small utilities -------------------------------------------------------
 
@@ -620,6 +624,47 @@ static Layout MakeLayout(float s) {
     return L;
 }
 
+static RECT SpeakerRect() {
+    Layout L = MakeLayout(g_scale);
+    int grip = (int)(8 * g_dpiScale); if (grip < 6) grip = 6;
+    int sz = (int)(20 * g_scale);     if (sz < 14) sz = 14;
+    int inset = (int)(9 * g_scale);   if (inset < grip + 2) inset = grip + 2;
+    int x0 = L.w - sz - inset;                        // top-right corner (clear of the flow arrow)
+    // vertically centered between the top of the window and the top-of-arrow line
+    float arrowTop = L.digitsY + L.cellH * 0.26f;
+    int y0 = (int)(arrowTop * 0.5f) - sz / 2; if (y0 < 2) y0 = 2;
+    return RECT{ x0, y0, x0 + sz, y0 + sz };
+}
+
+static void DrawSpeaker(Graphics& g, const RECT& r, bool on) {
+    float x = (float)r.left, y = (float)r.top;
+    float W = (float)(r.right - r.left), H = (float)(r.bottom - r.top);
+    auto P = [&](float nx, float ny){ return PointF(x + nx * W, y + ny * H); };
+
+    Color bodyCol = on ? Color(235, 200, 206, 216) : Color(165, 150, 154, 162);
+    GraphicsPath body;
+    PointF pts[6] = { P(0.10f,0.40f), P(0.22f,0.40f), P(0.40f,0.22f),
+                      P(0.40f,0.78f), P(0.22f,0.60f), P(0.10f,0.60f) };
+    body.AddPolygon(pts, 6);
+    SolidBrush bb(bodyCol);
+    g.FillPath(&bb, &body);
+
+    if (on) {
+        float cx = x + 0.42f * W, cy = y + 0.50f * H;
+        float wpw = 0.05f * W; if (wpw < 1.0f) wpw = 1.0f;
+        Pen wp(Color(210, 190, 196, 206), wpw);
+        wp.SetStartCap(LineCapRound); wp.SetEndCap(LineCapRound);
+        float r1 = 0.16f * W, r2 = 0.30f * W;
+        g.DrawArc(&wp, cx - r1, cy - r1, 2 * r1, 2 * r1, -55.0f, 110.0f);
+        g.DrawArc(&wp, cx - r2, cy - r2, 2 * r2, 2 * r2, -55.0f, 110.0f);
+    } else {
+        float spw = 0.09f * W; if (spw < 1.5f) spw = 1.5f;
+        Pen sp(Color(255, 255, 70, 55), spw);
+        sp.SetStartCap(LineCapRound); sp.SetEndCap(LineCapRound);
+        g.DrawLine(&sp, P(0.48f, 0.24f), P(0.02f, 0.76f));
+    }
+}
+
 static void DrawWidget(Graphics& g, const Layout& L, const Reading& r) {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintAntiAlias);
@@ -701,11 +746,14 @@ static void DrawWidget(Graphics& g, const Layout& L, const Reading& r) {
     // cloud-fallback indicator
     if (r.source == SrcCloud) {
         float rad = 3.5f * L.scale;
-        float cx = L.w - 11.0f * L.scale, cy = 11.0f * L.scale;
+        float cx = 11.0f * L.scale, cy = 11.0f * L.scale;
         GraphicsPath dot;
         dot.AddEllipse(cx - rad, cy - rad, rad * 2, rad * 2);
         FillGlow(g, dot, Color(255, 80, 200, 255), Color(90, 80, 200, 255), 4.0f * L.scale);
     }
+
+    // mute toggle (small speaker, top-left)
+    DrawSpeaker(g, SpeakerRect(), g_soundAlert.load());
 }
 
 // ---- render into the layered window ---------------------------------------
@@ -783,7 +831,7 @@ static void WorkerThread() {
 
     while (g_running.load()) {
         Reading r;
-        HttpResult lr = HttpRequest(L"GET", g_localHost, 80, false, g_localPath, L"", "", false);
+        HttpResult lr = HttpRequest(L"GET", g_localHost, 80, false, std::wstring(g_localPath), L"", "", false);
         if (lr.ok && lr.status == 200) {
             if (auto p = JsonNumber(lr.body, "power")) {
                 r.power = *p; r.valid = true; r.source = SrcLocal;
@@ -954,18 +1002,36 @@ static int RunLogin(int port) {
 // ---- window ----------------------------------------------------------------
 
 static void ParseLocalEndpoint(const std::wstring& s) {
-    if (s.rfind(L"http", 0) == 0) {
+    if (s.rfind(L"http", 0) == 0) {          // full URL: take the host only (path is fixed)
         URL_COMPONENTS uc{};
         uc.dwStructSize = sizeof(uc);
-        wchar_t hostBuf[256]{}, pathBuf[1024]{};
+        wchar_t hostBuf[256]{};
         uc.lpszHostName = hostBuf; uc.dwHostNameLength = 256;
-        uc.lpszUrlPath  = pathBuf; uc.dwUrlPathLength  = 1024;
-        if (WinHttpCrackUrl(s.c_str(), (DWORD)s.size(), 0, &uc)) {
+        if (WinHttpCrackUrl(s.c_str(), (DWORD)s.size(), 0, &uc))
             g_localHost.assign(uc.lpszHostName, uc.dwHostNameLength);
-            if (uc.dwUrlPathLength) g_localPath.assign(uc.lpszUrlPath, uc.dwUrlPathLength);
-        }
     } else {
         g_localHost = s;
+    }
+}
+
+static void ApplyUserScale(HWND hwnd, float userScale) {
+    g_userScale = userScale;
+    g_scale = g_dpiScale * g_userScale;
+    Layout L = MakeLayout(g_scale);
+    RECT wr; GetWindowRect(hwnd, &wr);
+    SetWindowPos(hwnd, nullptr, wr.right - L.w, wr.top, L.w, L.h, SWP_NOZORDER | SWP_NOACTIVATE);
+    RenderNow();
+    char b[32]; snprintf(b, sizeof(b), "%.3f", (double)userScale);
+    SetCredLine("scale", b);
+}
+// Double-click toggles between the current custom size and reset (1x),
+// remembering the custom size so the next double-click restores it.
+static void ToggleResetSize(HWND hwnd) {
+    if (std::fabs(g_userScale - 1.0f) > 0.01f) {
+        g_stashedScale = g_userScale;
+        ApplyUserScale(hwnd, 1.0f);
+    } else if (g_stashedScale > 0.01f) {
+        ApplyUserScale(hwnd, g_stashedScale);
     }
 }
 
@@ -986,8 +1052,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (R_) return HTRIGHT;
         if (T_) return HTTOP;
         if (B_) return HTBOTTOM;
+        RECT spk = SpeakerRect();
+        if (x >= spk.left && x < spk.right && y >= spk.top && y < spk.bottom) return HTCLIENT;
         return HTCAPTION;
     }
+
+    case WM_LBUTTONUP: {
+        POINT pt; GetCursorPos(&pt);
+        RECT wr; GetWindowRect(hwnd, &wr);
+        int x = pt.x - wr.left, y = pt.y - wr.top;
+        RECT spk = SpeakerRect();
+        if (x >= spk.left && x < spk.right && y >= spk.top && y < spk.bottom) {
+            bool nv = !g_soundAlert.load();
+            g_soundAlert = nv;
+            SetCredLine("sound_alert", nv ? "1" : "0");
+            RenderNow();
+        }
+        return 0;
+    }
+
+    case WM_NCLBUTTONDBLCLK:
+        if (wp == HTCAPTION) { ToggleResetSize(hwnd); return 0; }
+        break;
 
     case WM_APP_DATA:
         RenderNow();
@@ -996,8 +1082,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NCRBUTTONUP: {
         POINT pt; GetCursorPos(&pt);
         HMENU m = CreatePopupMenu();
-        AppendMenuW(m, MF_STRING | (g_soundAlert.load() ? MF_CHECKED : MF_UNCHECKED), 2,
-                    L"Sound alert on green\u2192red");
         AppendMenuW(m, MF_STRING, 3, L"Reset size");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING, 1, L"Exit");
@@ -1005,14 +1089,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
         DestroyMenu(m);
         if (cmd == 1) DestroyWindow(hwnd);
-        else if (cmd == 2) { bool nv = !g_soundAlert.load(); g_soundAlert = nv; SetCredLine("sound_alert", nv ? "1" : "0"); }
         else if (cmd == 3) {
-            g_userScale = 1.0f; g_scale = g_dpiScale;
-            Layout L = MakeLayout(g_scale);
-            RECT wr; GetWindowRect(hwnd, &wr);
-            SetWindowPos(hwnd, nullptr, wr.right - L.w, wr.top, L.w, L.h, SWP_NOZORDER | SWP_NOACTIVATE);
-            RenderNow();
-            SetCredLine("scale", "1.000");
+            if (std::fabs(g_userScale - 1.0f) > 0.01f) g_stashedScale = g_userScale;
+            ApplyUserScale(hwnd, 1.0f);
         }
         return 0;
     }
@@ -1117,6 +1196,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
                                       GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
     wc.lpszClassName = L"PowerChkWidget";

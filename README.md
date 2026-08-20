@@ -8,10 +8,10 @@ A small always-on-top Windows widget that shows live grid power from an
 - **Consumption / import** → red
 - **Feed-in / export** → green
 - Tiny in/out kWh counters along the bottom (toggle with `SHOW_COUNTERS`)
-- A small **cyan dot** (top-right) means the reading is coming from the cloud
+- A small **cyan dot** (top-left) means the reading is coming from the cloud
   fallback rather than the local device.
-- **Sound alert** on a green→red edge (export→import). Right-click to toggle;
-  the setting is remembered. Off with `sound_alert=0`; custom PCM `.wav` via `alert_sound` (single backslashes,
+- **Sound alert** on a green→red edge (export→import). Click the small **speaker icon** in the
+  top-right corner to mute/unmute; the setting is remembered. Off with `sound_alert=0`; custom PCM `.wav` via `alert_sound` (single backslashes,
   no escaping; a missing file falls back to the system sound).
 
 Single self-contained translation unit. No third-party libraries: WinHTTP for
@@ -76,6 +76,9 @@ cl /nologo /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE powerchk\powerchk.cpp p
    shell32.lib ws2_32.lib winmm.lib
 ```
 
+The `.rc` embeds the app icon and a `VERSIONINFO` block (shown in the EXE's
+Properties → Details). Bump the version numbers in `powerchk/resource.h`.
+
 ## Run
 
 ```
@@ -88,8 +91,9 @@ powerchk.exe --login [port]           rem one-time cloud enrollment
 Drag the window from anywhere with the left mouse button. **Resize** by dragging
 any edge or corner — the LED aspect ratio is preserved and the digits scale as
 crisp vector shapes (no bitmap blur). The zoom is remembered across restarts
-(`scale=` in the credential file). Right-click for a menu: toggle the sound
-alert, **Reset size**, or **Exit**.
+(`scale=` in the credential file). Click the small **speaker icon** (top-right) to mute/unmute the sound alert.
+**Double-click** the display to reset the size to 1×; double-click again to
+restore the previous size. Right-click for a menu: **Reset size** or **Exit**.
 
 ## Cloud fallback setup (optional)
 
