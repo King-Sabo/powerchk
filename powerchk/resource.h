@@ -5,7 +5,7 @@
 // Version — bump here; the .rc VERSIONINFO (and code, if desired) read these.
 #define PCHK_VER_MAJOR 1
 #define PCHK_VER_MINOR 0
-#define PCHK_VER_PATCH 2
+#define PCHK_VER_PATCH 3
 #define PCHK_VER_BUILD 0
 
 #define PCHK_VER_NUM  PCHK_VER_MAJOR, PCHK_VER_MINOR, PCHK_VER_PATCH, PCHK_VER_BUILD
