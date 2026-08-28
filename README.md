@@ -2,6 +2,8 @@
 
 <img src="icon.png" width="96" align="right" alt="powerchk icon">
 
+[![build](https://github.com/King-Sabo/powerchk/actions/workflows/build.yml/badge.svg)](https://github.com/King-Sabo/powerchk/actions/workflows/build.yml)
+
 A small always-on-top Windows widget that shows live grid power from an
 **everHome EcoTracker** as glowing seven-segment LED digits.
 
@@ -11,7 +13,9 @@ A small always-on-top Windows widget that shows live grid power from an
 - A small **cyan dot** (top-left) means the reading is coming from the cloud
   fallback rather than the local device.
 - **Sound alert** on a green→red edge (export→import). Click the small **speaker icon** in the
-  top-right corner to mute/unmute; the setting is remembered. Off with `sound_alert=0`; custom PCM `.wav` via `alert_sound` (single backslashes,
+  top-right corner to mute/unmute; the setting is remembered.
+- **Flash alert**: the window blinks 3× on a green→red edge. Toggle it from the
+  right-click menu (**Flash on green→red**); the setting is remembered. Off with `sound_alert=0`; custom PCM `.wav` via `alert_sound` (single backslashes,
   no escaping; a missing file falls back to the system sound).
 
 Single self-contained translation unit. No third-party libraries: WinHTTP for
@@ -93,7 +97,8 @@ any edge or corner — the LED aspect ratio is preserved and the digits scale as
 crisp vector shapes (no bitmap blur). The zoom is remembered across restarts
 (`scale=` in the credential file). Click the small **speaker icon** (top-right) to mute/unmute the sound alert.
 **Double-click** the display to reset the size to 1×; double-click again to
-restore the previous size. Right-click for a menu: **Reset size** or **Exit**.
+restore the previous size. Right-click for a menu: **Flash on green→red** (toggle),
+**Reset size**, or **Exit**.
 
 ## Cloud fallback setup (optional)
 
@@ -136,6 +141,16 @@ Constants near the top of `powerchk.cpp`:
 - `NEGATIVE_IS_FEEDIN` — sign convention of the meter's `power` field.
 - `SHOW_COUNTERS` — show/hide the bottom kWh line.
 - `DIGIT_COUNT` — number of seven-segment cells (default 5 → up to 99999 W).
+
+## Continuous integration
+
+`.github/workflows/build.yml` builds the solution on `windows-latest` for both
+**Debug** and **Release** (x64) on every push and pull request, verifies that
+`powerchk.exe` was produced (and prints its embedded version), and uploads each
+build as a workflow artifact (`powerchk-x64-<config>`). The artifacts are
+unsigned, expire after 7 days, and need a GitHub login to fetch — they exist so a
+change can be confirmed to compile, not as releases. The badge points at
+`King-Sabo/powerchk`; adjust the owner/repo if yours differs.
 
 ## Roadmap
 

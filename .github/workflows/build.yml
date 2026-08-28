@@ -1,0 +1,49 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msbuild:
+    name: x64 ${{ matrix.configuration }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [ Debug, Release ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: >
+          msbuild powerchk.sln
+          /p:Configuration=${{ matrix.configuration }}
+          /p:Platform=x64
+          /m
+
+      - name: Check the EXE was produced
+        shell: pwsh
+        run: |
+          $out = "x64/${{ matrix.configuration }}/powerchk.exe"
+          if (-not (Test-Path $out)) { throw "missing $out" }
+          Get-Item $out | Format-List Name, Length
+          (Get-Item $out).VersionInfo | Format-List FileVersion, ProductVersion, FileDescription
+
+      # NOT a release: CI artifacts expire, need a GitHub login to fetch, and are
+      # unsigned. They exist so a contributor can confirm a change still compiles.
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: powerchk-x64-${{ matrix.configuration }}
+          path: x64/${{ matrix.configuration }}/powerchk.exe
+          retention-days: 7
+          if-no-files-found: error

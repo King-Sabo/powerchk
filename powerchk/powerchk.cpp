@@ -88,7 +88,9 @@ static constexpr int      DEFAULT_REDIRECT_PORT = 53127;
 
 // ---------------------------------------------------------------------------
 
-#define WM_APP_DATA (WM_APP + 1)
+#define WM_APP_DATA  (WM_APP + 1)
+#define WM_APP_FLASH (WM_APP + 2)
+static constexpr UINT_PTR FLASH_TIMER_ID = 1;
 
 enum { SEG_A = 1, SEG_B = 2, SEG_C = 4, SEG_D = 8, SEG_E = 16, SEG_F = 32, SEG_G = 64 };
 
@@ -157,7 +159,9 @@ static std::wstring       g_accessToken;                          // "Bearer" va
 static ULONGLONG          g_accessExpiry = 0;                     // GetTickCount64 ms
 
 static std::atomic<bool>  g_soundAlert{ true };   // beep on a green->red (export->import) edge
+static std::atomic<bool>  g_flashAlert{ true };   // flash the window on a green->red edge
 static std::wstring       g_alertSound;           // optional custom WAV; empty = system sound
+static int                g_flashRemaining = 0;   // remaining hide/show toggles (UI thread)
 
 // fixed endpoints (compile-time constants)
 static constexpr std::wstring_view g_localPath = L"/v1/json";   // ecotracker local path
@@ -530,6 +534,8 @@ static void InitCloudFromCreds() {
 
     std::string sa = CredGet("sound_alert");
     if (!sa.empty()) { std::string v = Lower(sa); g_soundAlert = (v == "1" || v == "true" || v == "yes" || v == "on"); }
+    std::string fa = CredGet("flash_alert");
+    if (!fa.empty()) { std::string v = Lower(fa); g_flashAlert = (v == "1" || v == "true" || v == "yes" || v == "on"); }
     std::string as = CredGet("alert_sound"); if (!as.empty()) g_alertSound = Widen(as);
     std::string sc = CredGet("scale");
     if (!sc.empty()) { double v = atof(sc.c_str()); if (v >= 0.6 && v <= 4.0) g_userScale = (float)v; }
@@ -869,7 +875,10 @@ static void WorkerThread() {
         {
             Reading cur; { std::lock_guard<std::mutex> lk(g_mtx); cur = g_reading; }
             int d = DirectionOf(cur);
-            if (d == FLOW_IMPORT && lastNonNeutral == FLOW_FEEDIN) PlayAlert();
+            if (d == FLOW_IMPORT && lastNonNeutral == FLOW_FEEDIN) {
+                PlayAlert();
+                if (g_flashAlert.load() && g_hwnd) PostMessageW(g_hwnd, WM_APP_FLASH, 0, 0);
+            }
             if (d == FLOW_IMPORT || d == FLOW_FEEDIN) lastNonNeutral = d;
         }
 
@@ -1079,9 +1088,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         RenderNow();
         return 0;
 
+    case WM_APP_FLASH:
+        g_flashRemaining = 6;                       // 3 hide/show cycles
+        SetTimer(hwnd, FLASH_TIMER_ID, 110, nullptr);
+        return 0;
+
+    case WM_TIMER:
+        if (wp == FLASH_TIMER_ID) {
+            if (g_flashRemaining > 0) {
+                ShowWindow(hwnd, IsWindowVisible(hwnd) ? SW_HIDE : SW_SHOWNOACTIVATE);
+                if (--g_flashRemaining == 0) {
+                    KillTimer(hwnd, FLASH_TIMER_ID);
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);   // guarantee visible at the end
+                    RenderNow();
+                }
+            }
+            return 0;
+        }
+        break;
+
     case WM_NCRBUTTONUP: {
         POINT pt; GetCursorPos(&pt);
         HMENU m = CreatePopupMenu();
+        AppendMenuW(m, MF_STRING | (g_flashAlert.load() ? MF_CHECKED : MF_UNCHECKED), 4,
+                    L"Flash on green\u2192red");
         AppendMenuW(m, MF_STRING, 3, L"Reset size");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING, 1, L"Exit");
@@ -1089,6 +1119,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
         DestroyMenu(m);
         if (cmd == 1) DestroyWindow(hwnd);
+        else if (cmd == 4) { bool nv = !g_flashAlert.load(); g_flashAlert = nv; SetCredLine("flash_alert", nv ? "1" : "0"); }
         else if (cmd == 3) {
             if (std::fabs(g_userScale - 1.0f) > 0.01f) g_stashedScale = g_userScale;
             ApplyUserScale(hwnd, 1.0f);
