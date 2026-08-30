@@ -145,6 +145,8 @@ static float              g_scale = 1.0f;      // effective = dpi * user
 static float              g_dpiScale = 1.0f;
 static float              g_userScale = 1.0f;  // persisted zoom (scale= in creds)
 static float              g_stashedScale = 0.0f;  // size remembered by the reset toggle (0 = none)
+static int                g_posX = 0, g_posY = 0;  // restored window position (screen px)
+static bool               g_havePos = false;
 
 static std::wstring       g_localHost = L"192.168.1.111";   // host/IP is overridable
 static int                g_localIntervalMs = 1000;
@@ -539,6 +541,8 @@ static void InitCloudFromCreds() {
     std::string as = CredGet("alert_sound"); if (!as.empty()) g_alertSound = Widen(as);
     std::string sc = CredGet("scale");
     if (!sc.empty()) { double v = atof(sc.c_str()); if (v >= 0.6 && v <= 4.0) g_userScale = (float)v; }
+    std::string px = CredGet("pos_x"), py = CredGet("pos_y");
+    if (!px.empty() && !py.empty()) { g_posX = atoi(px.c_str()); g_posY = atoi(py.c_str()); g_havePos = true; }
 
     g_cloudEnabled = !g_clientId.empty() && !g_clientSecret.empty() &&
                      !g_refresh.empty()  && !g_cloudDevicePath.empty();
@@ -1044,6 +1048,28 @@ static void ToggleResetSize(HWND hwnd) {
     }
 }
 
+// Keep a window rect fully inside the work area of whichever monitor it is
+// nearest to -- so a position saved on a now-missing/resized display can't
+// leave the widget stranded off-screen.
+static void ClampToWorkArea(int& x, int& y, int w, int h) {
+    RECT target = { x, y, x + w, y + h };
+    HMONITOR hMon = MonitorFromRect(&target, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{}; mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(hMon, &mi)) return;
+    const RECT& wk = mi.rcWork;
+    if (x + w > wk.right)  x = wk.right - w;
+    if (y + h > wk.bottom) y = wk.bottom - h;
+    if (x < wk.left) x = wk.left;
+    if (y < wk.top)  y = wk.top;
+}
+static void SaveWindowPlacement(HWND hwnd) {
+    RECT wr; GetWindowRect(hwnd, &wr);
+    char b[32];
+    snprintf(b, sizeof(b), "%.3f", (double)g_userScale); SetCredLine("scale", b);
+    snprintf(b, sizeof(b), "%d", (int)wr.left);          SetCredLine("pos_x", b);
+    snprintf(b, sizeof(b), "%d", (int)wr.top);           SetCredLine("pos_y", b);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_NCHITTEST: {
@@ -1174,14 +1200,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         RenderNow();
         return 0;
 
-    case WM_EXITSIZEMOVE: {
-        char b[32];
-        snprintf(b, sizeof(b), "%.3f", (double)g_userScale);
-        SetCredLine("scale", b);
+    case WM_EXITSIZEMOVE:
+        SaveWindowPlacement(hwnd);
         return 0;
-    }
 
     case WM_DESTROY:
+        SaveWindowPlacement(hwnd);
         g_running = false;
         PostQuitMessage(0);
         return 0;
@@ -1246,12 +1270,30 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     g_scale = g_dpiScale * g_userScale;
     Layout L = MakeLayout(g_scale);
 
-    RECT wa{};
-    SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0);
-    int margin = (int)(24 * g_scale);
-    int x = wa.right - L.w - margin;
-    int y = wa.top + margin;
+    int x, y;
+    if (g_havePos) {
+        x = g_posX; y = g_posY;
+        ClampToWorkArea(x, y, L.w, L.h);
+    } else {
+        RECT wa{};
+        SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0);
+        int margin = (int)(24 * g_scale);
+        x = wa.right - L.w - margin;
+        y = wa.top + margin;
+    }
     SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, L.w, L.h, SWP_NOACTIVATE);
+
+    // If the restored spot is on a monitor with a different DPI, correct the
+    // size for that monitor and re-clamp.
+    UINT dpi2 = GetDpiForWindow(g_hwnd);
+    if (dpi2 != dpi) {
+        g_dpiScale = dpi2 / 96.0f;
+        g_scale = g_dpiScale * g_userScale;
+        L = MakeLayout(g_scale);
+        ClampToWorkArea(x, y, L.w, L.h);
+        SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, L.w, L.h, SWP_NOACTIVATE);
+    }
+
     ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
     RenderNow();
 

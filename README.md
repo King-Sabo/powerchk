@@ -100,6 +100,11 @@ crisp vector shapes (no bitmap blur). The zoom is remembered across restarts
 restore the previous size. Right-click for a menu: **Flash on green→red** (toggle),
 **Reset size**, or **Exit**.
 
+powerchk remembers its **size and position** across restarts (written to the
+config on move and on exit). If the display it was on is gone or resized, it's
+clamped back onto the nearest monitor so it can't end up off-screen; monitors
+with different DPI are handled too.
+
 ## Cloud fallback setup (optional)
 
 The cloud is only needed when the local API is unreachable. everHome uses the
